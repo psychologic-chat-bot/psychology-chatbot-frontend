@@ -990,7 +990,13 @@ PlayerSettings:
   XboxOneOverrideIdentityPublisher: 
   vrEditorSettings: {}
   cloudServicesEnabled:
+    Build: 0
+    Game Performance: 0
+    Legacy Analytics: 0
+    Purchasing: 0
+    UDP: 0
     UNet: 1
+    Unity Ads: 0
   luminIcon:
     m_Name: 
     m_ModelFolderPath: 
@@ -1010,13 +1016,13 @@ PlayerSettings:
   qnxGraphicConfPath: 
   apiCompatibilityLevel: 6
   captureStartupLogs: {}
-  activeInputHandler: 1
+  activeInputHandler: 2
   windowsGamepadBackendHint: 0
-  cloudProjectId: 2c977588-065f-47f9-85b7-08748dca926e
+  cloudProjectId: 5c15dbc0-e5dc-4523-a4d3-0b068e45fe0b
   framebufferDepthMemorylessMode: 0
   qualitySettingsNames: []
   projectName: Chatbot_PsychologyPatient
-  organizationId: gregoriorivasmvzael3p
+  organizationId: rivasdepaula
   cloudEnabled: 0
   legacyClampBlendShapeWeights: 0
   hmiLoadingImage: {fileID: 0}
