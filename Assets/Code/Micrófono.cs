@@ -145,6 +145,6 @@ public class Micrófono : MonoBehaviour
         if (string.IsNullOrWhiteSpace(text))
             return;
 
-        StartCoroutine(conexiónBun.Text(text));
+        conexiónBun.SendMessageToPatient(text);
     }
 }
