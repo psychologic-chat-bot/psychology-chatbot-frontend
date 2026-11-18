@@ -190,8 +190,4 @@ public class Conexión_Bun : MonoBehaviour
         Debug.LogError($"[Conexión_Bun] {message}");
         onError.Invoke(message);
     }
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> 513fcde7c091c7c583e2c155de2ed34e4f6441c6
