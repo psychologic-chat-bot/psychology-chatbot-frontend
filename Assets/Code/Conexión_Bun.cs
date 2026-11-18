@@ -1,154 +1,193 @@
 using System;
-using System.Collections;
-using System.Diagnostics;
-using System.Net.Sockets;
-using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
-using Debug = UnityEngine.Debug;
+using System.Collections;
+using System.Text;
+using UnityEngine.Events;
 
 public class Conexión_Bun : MonoBehaviour
 {
-    public Micrófono micrófono;
-
+    [Header("Backend")]
     [SerializeField] private string baseUrl = "http://localhost:3000";
     [SerializeField] private string patientId = "shared_conversation_Valentina";
+    [SerializeField] private int timeoutSeconds = 120;
+
+    [Header("Eventos")]
+    [SerializeField] private UnityEvent<string> onReply = new UnityEvent<string>();
+    [SerializeField] private UnityEvent<string> onError = new UnityEvent<string>();
+
+    private const string UserIdKey = "psychology-chatbot-user-id";
     private string userId;
 
-    [Tooltip("Folder that contains package.json")]
-    public string projectPath = @"C:\Users\gregorio.rivas\Documents\Proyectos\psychology-chatbot-backend";
+    [Serializable]
+    private class PatientListResponse
+    {
+        public PatientSummary[] patients;
+    }
 
-    [Tooltip("Port your dev server listens on")]
-    public int port = 3000;
+    [Serializable]
+    private class PatientSummary
+    {
+        public string id;
+    }
 
-    [Tooltip("Kill the server when Unity stops playing")]
-    public bool stopOnQuit = true;
-
-    private static Process bunProcess;
-
-    public class PreguntaPsicólogo
+    [Serializable]
+    private class ChatRequest
     {
         public string userId;
         public string patientId;
         public string message;
     }
 
-    private class RespuestaPaciente
+    [Serializable]
+    private class ChatResponse
     {
         public string reply;
+        public string error;
     }
 
-    void Awake()
+    private void Awake()
     {
-        const string userIdKey = "psychology-chatbot-user-id";
-        userId = PlayerPrefs.GetString(userIdKey, "");
-
+        userId = PlayerPrefs.GetString(UserIdKey, "");
         if (string.IsNullOrEmpty(userId))
         {
-            userId = Guid.NewGuid().ToString();
-            PlayerPrefs.SetString(userIdKey, userId);
-        }
-
-        if (IsPortOpen(port))
-        {
-            Debug.Log($"Bun is already running on port {port}, not starting another one.");
-            return;
-        }
-
-        if (bunProcess != null && !bunProcess.HasExited) return;
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = "bun",                 // must be in PATH (or use the full path to bun.exe)
-            Arguments = "run dev",
-            WorkingDirectory = projectPath,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-
-        bunProcess = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        bunProcess.OutputDataReceived += (s, e) => { if (e.Data != null) Debug.Log("[bun] " + e.Data); };
-        bunProcess.ErrorDataReceived += (s, e) => { if (e.Data != null) Debug.LogWarning("[bun] " + e.Data); };
-
-        try
-        {
-            bunProcess.Start();
-            bunProcess.BeginOutputReadLine();
-            bunProcess.BeginErrorReadLine();
-            Debug.Log("Started 'bun run dev'");
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError("Could not start Bun: " + ex.Message);
+            userId = Guid.NewGuid().ToString("N");
+            PlayerPrefs.SetString(UserIdKey, userId);
+            PlayerPrefs.Save();
         }
     }
 
-    void OnApplicationQuit()
+    private IEnumerator Start()
     {
-        if (!stopOnQuit || bunProcess == null || bunProcess.HasExited) return;
-
-        try
+        string patientsUrl = GetBaseUrl() + "/patients";
+        using (UnityWebRequest request = UnityWebRequest.Get(patientsUrl))
         {
-            // Kills bun AND any child processes it spawned (Windows)
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "taskkill",
-                Arguments = $"/PID {bunProcess.Id} /T /F",
-                CreateNoWindow = true,
-                UseShellExecute = false
-            });
-        }
-        catch { bunProcess.Kill(); }
-    }
-
-    private static bool IsPortOpen(int port)
-    {
-        try
-        {
-            using var client = new TcpClient();
-            var result = client.BeginConnect("127.0.0.1", port, null, null);
-            bool ok = result.AsyncWaitHandle.WaitOne(200);
-            if (ok) client.EndConnect(result);
-            return ok && client.Connected;
-        }
-        catch { return false; }
-    }
-
-    public IEnumerator Text(string text)
-    {
-        PreguntaPsicólogo pregunta = new PreguntaPsicólogo
-        {
-            userId = userId,
-            patientId = patientId,
-            message = text,
-        };
-
-        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(pregunta));
-        Debug.Log($"userId: {userId}" + $"paciente: {patientId}" + $"message: {text}");
-
-        using (var request = new UnityWebRequest(
-            baseUrl.TrimEnd('/') + "/chat",
-            UnityWebRequest.kHttpVerbPOST))
-        {
-            request.uploadHandler = new UploadHandlerRaw(body);
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Content-Type", "application/json");
-
+            request.timeout = timeoutSeconds;
             yield return request.SendWebRequest();
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                Debug.LogError(
-                    $"Error al llamar al backend: {request.responseCode} {request.error}\n" +
-                    request.downloadHandler.text);
+                ReportError($"No se pudo conectar con el backend ({request.error}). Verifica la URL y que el servidor esté activo.");
                 yield break;
             }
-            var response =
-                JsonUtility.FromJson<RespuestaPaciente>(request.downloadHandler.text);
 
-            Debug.Log("Respuesta del paciente: " + response.reply);
+            PatientListResponse response;
+            try
+            {
+                response = JsonUtility.FromJson<PatientListResponse>(request.downloadHandler.text);
+            }
+            catch (Exception exception)
+            {
+                ReportError($"El backend devolvió una lista de pacientes inválida: {exception.Message}");
+                yield break;
+            }
+
+            if (response?.patients == null || response.patients.Length == 0)
+            {
+                ReportError("El backend no tiene pacientes disponibles.");
+                yield break;
+            }
+
+            bool patientExists = false;
+            foreach (PatientSummary patient in response.patients)
+            {
+                if (patient.id == patientId)
+                {
+                    patientExists = true;
+                    break;
+                }
+            }
+
+            if (!patientExists)
+            {
+                patientId = response.patients[0].id;
+                Debug.LogWarning($"El paciente configurado no existe. Se seleccionó '{patientId}'.");
+            }
+
+            Debug.Log($"Backend conectado. Paciente seleccionado: {patientId}");
         }
+    }
+
+    public void SendMessageToPatient(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            ReportError("Escribe un mensaje antes de enviarlo.");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(patientId))
+        {
+            ReportError("No hay un paciente seleccionado. Espera a que el backend cargue los pacientes.");
+            return;
+        }
+
+        StartCoroutine(RequestChatReply(message.Trim()));
+    }
+
+    private IEnumerator RequestChatReply(string message)
+    {
+        ChatRequest payload = new ChatRequest
+        {
+            userId = userId,
+            patientId = patientId,
+            message = message
+        };
+        byte[] body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload));
+
+        using (UnityWebRequest request = new UnityWebRequest(GetBaseUrl() + "/chat", "POST"))
+        {
+            request.uploadHandler = new UploadHandlerRaw(body);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = timeoutSeconds;
+            request.SetRequestHeader("Content-Type", "application/json");
+
+            yield return request.SendWebRequest();
+
+            string responseText = request.downloadHandler.text;
+            ChatResponse response = null;
+            if (!string.IsNullOrEmpty(responseText))
+            {
+                try
+                {
+                    response = JsonUtility.FromJson<ChatResponse>(responseText);
+                }
+                catch (Exception exception)
+                {
+                    ReportError($"No se pudo interpretar la respuesta del backend: {exception.Message}");
+                    yield break;
+                }
+            }
+
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                string messageText = response?.error;
+                if (string.IsNullOrEmpty(messageText))
+                {
+                    messageText = request.error;
+                }
+                ReportError($"Error del backend (HTTP {request.responseCode}): {messageText}");
+                yield break;
+            }
+
+            if (string.IsNullOrEmpty(response?.reply))
+            {
+                ReportError("El backend respondió correctamente, pero no devolvió el campo 'reply'.");
+                yield break;
+            }
+
+            onReply.Invoke(response.reply);
+        }
+    }
+
+    private string GetBaseUrl()
+    {
+        return baseUrl.TrimEnd('/');
+    }
+
+    private void ReportError(string message)
+    {
+        Debug.LogError($"[Conexión_Bun] {message}");
+        onError.Invoke(message);
     }
 }
