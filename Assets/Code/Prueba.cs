@@ -16,6 +16,7 @@ public class Prueba : MonoBehaviour
     private void Start()
     {
         StartCoroutine(Sentarse());
+        Time.timeScale = 0.5f;
     }
     private void Update()
     {
@@ -40,5 +41,8 @@ public class Prueba : MonoBehaviour
         }
         Mover = false;
         Sentar = true;
+        yield return new WaitForSeconds(1.5f);
+        Animator.SetTrigger("Giro");
+        transform.rotation = Quaternion.Euler(0f, 0f, 0f);
     }
 }

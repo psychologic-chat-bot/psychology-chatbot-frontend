@@ -1,88 +1,81 @@
 using System;
-using System.Collections;
-using System.IO;
 using UnityEngine;
 using UnityEngine.Events;
-using UnityEngine.Networking;
+using Whisper; // from the whisper.unity package
 #if UNITY_ANDROID
 using UnityEngine.Android;
 #endif
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
 
 /// <summary>
-/// Records microphone audio, encodes it as a 16-bit mono WAV and POSTs it
-/// to a speech-to-text server. Fires onTranscript with the returned text.
+/// Records microphone audio and transcribes it on-device with whisper.unity.
+/// No WAV encoding and no server needed.
 ///
-/// Usage:
-///  - Add to any GameObject.
-///  - Set serverUrl to your coworker's endpoint.
-///  - Call StartRecording() / StopRecordingAndSend() from a VR controller
-///    button event (or use the keyboard push-to-talk key for testing).
+/// Setup:
+///  1. Install whisper.unity (see instructions) and add a WhisperManager
+///     component to a GameObject. Point it at a model in StreamingAssets.
+///  2. Add this script to a GameObject and drag the WhisperManager into the field.
+///  3. Call StartRecording() / StopRecordingAndTranscribe() from your VR controller
+///     events, or hold the push-to-talk key in the editor.
 /// </summary>
-public class Micr贸fono : MonoBehaviour
+public class Micr骹ono : MonoBehaviour
 {
-    [Header("Server")]
-    [Tooltip("Endpoint that accepts a WAV upload and returns JSON like {\"text\": \"...\"}")]
-    [SerializeField] private string serverUrl = "http://192.168.1.50:3000/transcribe";
-    [Tooltip("Multipart field name the server expects for the audio file")]
-    [SerializeField] private string formFieldName = "file";
-    [SerializeField] private int timeoutSeconds = 30;
+    public Conexi髇_Bun conexi髇Bun;
+    [Header("References")]
+    [SerializeField] private WhisperManager whisper;
 
     [Header("Recording")]
-    [Tooltip("16000 Hz is what Whisper uses internally, and keeps uploads small")]
+    [Tooltip("Whisper works at 16000 Hz")]
     [SerializeField] private int sampleRate = 16000;
     [SerializeField] private int maxRecordSeconds = 30;
     [Tooltip("Leave empty to use the default microphone")]
-    [SerializeField] private string micr贸fonoExistente = "";
+    [SerializeField] private string microphoneDevice = "";
 
     [Header("Testing (keyboard push-to-talk)")]
-    [SerializeField] private KeyCode pulsarParaHablar = KeyCode.Space;
+    [SerializeField] private KeyCode pushToTalkKey = KeyCode.Space;
 
-    [Header("Eventos")]
-    public UnityEvent<string> EnTranscribir;
-    public UnityEvent<string> EnError;
+    [Header("Events")]
+    public UnityEvent<string> onTranscript;
+    public UnityEvent<string> onError;
 
-    public bool grabando { get; private set; }
-    private AudioClip grabaci贸n;
-    private string micr贸fono;
+    public bool IsRecording { get; private set; }
+    public bool IsTranscribing { get; private set; }
 
-    [Serializable]
-    private class TranscriptResponse
+    private AudioClip _clip;
+    private string _device;
+    public string conversaci髇;
+
+    private void Start()
     {
-        public string texto;
-    }
+        foreach (var device in Microphone.devices)
+        {
+            Debug.Log("Name: " + device);
+        }
+        _device = string.IsNullOrEmpty(microphoneDevice) ? null : microphoneDevice;
 
-    private IEnumerator Start()
-    {
 #if UNITY_ANDROID && !UNITY_EDITOR
-        // Quest / Android needs a runtime microphone permission
         if (!Permission.HasUserAuthorizedPermission(Permission.Microphone))
-        {
             Permission.RequestUserPermission(Permission.Microphone);
-            yield return new WaitForSeconds(1f);
-        }
 #endif
-        foreach (var micr贸fonos in Microphone.devices)
-        {
-            Debug.Log("Name: " + micr贸fonos);
-        }
-        micr贸fono = string.IsNullOrEmpty(micr贸fonoExistente) ? null : micr贸fonoExistente;
 
-        if (Microphone.devices.Length == 0)
-            Fail("No microphone detected.");
-        else
-        {
-            Debug.Log("Hay micr贸fonos disponibles");
-        } 
-        
-
-            yield break;
+        if (whisper == null)
+            Fail("Assign the WhisperManager in the inspector.");
     }
 
     private void Update()
     {
-#if ENABLE_LEGACY_INPUT_MANAGER
-        if (Input.GetKeyDown(pulsarParaHablar)) StartRecording();
-        if (Input.GetKeyUp(pulsarParaHablar)) StopRecordingAndSend();
+#if ENABLE_INPUT_SYSTEM
+        var keyboard = Keyboard.current;
+        if (keyboard != null)
+        {
+            if (keyboard.spaceKey.wasPressedThisFrame) StartRecording();
+            if (keyboard.spaceKey.wasReleasedThisFrame) StopRecordingAndTranscribe();
+        }
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetKeyDown(pushToTalkKey)) StartRecording();
+        if (Input.GetKeyUp(pushToTalkKey)) StopRecordingAndTranscribe();
 #endif
     }
 
@@ -90,117 +83,68 @@ public class Micr贸fono : MonoBehaviour
 
     public void StartRecording()
     {
-        if (grabando) return;
+        if (IsRecording || IsTranscribing) return;
         if (Microphone.devices.Length == 0)
         {
             Fail("No microphone detected.");
             return;
         }
 
-        grabaci贸n = Microphone.Start(micr贸fono, false, maxRecordSeconds, sampleRate);
-        grabando = true;
-        Debug.Log("[MicrophoneRecorder] Recording started");
+        _clip = Microphone.Start(_device, false, maxRecordSeconds, sampleRate);
+        IsRecording = true;
+        Debug.Log("[MicrophoneTranscriber] Recording started");
     }
 
-    public void StopRecordingAndSend()
+    public async void StopRecordingAndTranscribe()
     {
-        if (!grabando) return;
-        grabando = false;
+        if (!IsRecording) return;
+        IsRecording = false;
 
-        int samplesRecorded = Microphone.GetPosition(micr贸fono);
-        Microphone.End(micr贸fono);
-        Debug.Log($"[MicrophoneRecorder] Recording stopped ({samplesRecorded} samples)");
+        int samplesRecorded = Microphone.GetPosition(_device);
+        Microphone.End(_device);
 
         // Ignore accidental taps (< 0.3 seconds)
-        if (grabaci贸n == null || samplesRecorded < sampleRate * 0.3f)
+        if (_clip == null || samplesRecorded < sampleRate * 0.3f)
         {
-            Debug.Log("[MicrophoneRecorder] Recording too short, discarded.");
+            Debug.Log("[MicrophoneTranscriber] Recording too short, discarded.");
             return;
         }
 
-        // Only grab the portion that was actually recorded, not the whole buffer
-        float[] samples = new float[samplesRecorded * grabaci贸n.channels];
-        grabaci贸n.GetData(samples, 0);
+        // Copy only the part that was actually recorded
+        float[] samples = new float[samplesRecorded * _clip.channels];
+        _clip.GetData(samples, 0);
 
-        //byte[] wav = EncodeWav(samples, _clip.channels, _clip.frequency);
-        //StartCoroutine(SendAudio(wav));
-        Reproducir();
-    }
-
-    private void Reproducir()
-    {
-        AudioSource.PlayClipAtPoint(grabaci贸n, gameObject.transform.position);
-    }
-    // ---- Networking ----
-
-    private IEnumerator SendAudio(byte[] wavBytes)
-    {
-        WWWForm form = new WWWForm();
-        form.AddBinaryData(formFieldName, wavBytes, "recording.wav", "audio/wav");
-
-        using (UnityWebRequest request = UnityWebRequest.Post(serverUrl, form))
+        IsTranscribing = true;
+        try
         {
-            request.timeout = timeoutSeconds;
-            yield return request.SendWebRequest();
-
-            if (request.result != UnityWebRequest.Result.Success)
-            {
-                Fail($"Request failed: {request.error} (HTTP {request.responseCode})");
-                yield break;
-            }
-
-            string json = request.downloadHandler.text;
-            try
-            {
-                TranscriptResponse response = JsonUtility.FromJson<TranscriptResponse>(json);
-                string text = response?.texto?.Trim();
-                Debug.Log($"[MicrophoneRecorder] Transcript: {text}");
-                EnTranscribir?.Invoke(text);
-            }
-            catch (Exception e)
-            {
-                Fail($"Could not parse server response: {e.Message}\n{json}");
-            }
+            var result = await whisper.GetTextAsync(samples, _clip.frequency, _clip.channels);
+            string text = result?.Result?.Trim();
+            //Debug.Log($"[MicrophoneTranscriber] Transcript: {text}");
+            conversaci髇 = text;
+            onTranscript?.Invoke(text);
+        }
+        catch (Exception e)
+        {
+            Fail($"Transcription failed: {e.Message}");
+        }
+        finally
+        {
+            IsTranscribing = false;
+            SendText(conversaci髇);
         }
     }
 
-    // ---- WAV encoding (16-bit PCM) ----
-
-    private static byte[] EncodeWav(float[] samples, int channels, int sampleRate)
+    private void Fail(string mensaje)
     {
-        const int headerSize = 44;
-        int dataSize = samples.Length * 2;
-
-        using (MemoryStream stream = new MemoryStream(headerSize + dataSize))
-        using (BinaryWriter writer = new BinaryWriter(stream))
-        {
-            writer.Write(new[] { 'R', 'I', 'F', 'F' });
-            writer.Write(36 + dataSize);
-            writer.Write(new[] { 'W', 'A', 'V', 'E' });
-            writer.Write(new[] { 'f', 'm', 't', ' ' });
-            writer.Write(16);                          // fmt chunk size
-            writer.Write((short)1);                    // PCM
-            writer.Write((short)channels);
-            writer.Write(sampleRate);
-            writer.Write(sampleRate * channels * 2);   // byte rate
-            writer.Write((short)(channels * 2));       // block align
-            writer.Write((short)16);                   // bits per sample
-            writer.Write(new[] { 'd', 'a', 't', 'a' });
-            writer.Write(dataSize);
-
-            foreach (float sample in samples)
-            {
-                short value = (short)(Mathf.Clamp(sample, -1f, 1f) * short.MaxValue);
-                writer.Write(value);
-            }
-
-            return stream.ToArray();
-        }
+        Debug.LogError($"[MicrophoneTranscriber] {mensaje}");
+        onError?.Invoke(mensaje);
     }
 
-    private void Fail(string message)
+    public void SendText(string text)
     {
-        Debug.LogError($"[MicrophoneRecorder] {message}");
-        EnError?.Invoke(message);
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        StartCoroutine(conexi髇Bun.Text(text));
     }
 }
